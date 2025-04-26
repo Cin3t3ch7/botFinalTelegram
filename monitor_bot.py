@@ -10,6 +10,14 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# Definición interna de admin_required para evitar dependencias circulares
+def admin_required(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not await check_auth(update):
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
 # Configuración de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Configuración
 MONITOR_BOT_TOKEN = "7703828582:AAGoZaPoo6FTi4gmgzkF_iBDArzhwY7PrSQ"
 ADMIN_IDS = [1516580367]  # Super Admin ID
-SYSTEMD_SERVICE = "telegram-bot.service"
+SYSTEMD_SERVICE = "botFinalTlg"  # Nombre actualizado del servicio
 
 # Estado de los bots
 bot_status = {}
@@ -55,6 +63,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/logs - Ver últimos logs de error\n"
         "/clean - Limpiar conexiones IMAP y BD\n"
         "/kill - Terminar instancias problemáticas\n"
+        "/update - Actualizar código desde GitHub\n"
         "/help - Ver esta ayuda"
     )
 
@@ -178,7 +187,7 @@ async def restart_service_command(update: Update, context: ContextTypes.DEFAULT_
     ]
     
     await update.message.reply_text(
-        "⚠️ ¿Estás seguro de que deseas reiniciar el servicio completo? (systemctl restart telegram-bot.service)",
+        f"⚠️ ¿Estás seguro de que deseas reiniciar el servicio completo? (systemctl restart {SYSTEMD_SERVICE})",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -331,6 +340,60 @@ async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ PID inválido. Debe ser un número.")
 
+# Comando /update
+@admin_required
+async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Actualiza el código del bot desde GitHub
+    Uso: /update
+    """
+    try:
+        # Mostrar mensaje de inicio
+        message = await update.message.reply_text("🔄 Iniciando actualización desde GitHub...")
+        
+        # Ejecutar git pull para actualizar el código
+        process = subprocess.run(
+            ["git", "pull", "origin", "main"], 
+            cwd="/root/botFinalTlg",  # Ruta actualizada
+            capture_output=True, 
+            text=True
+        )
+        
+        # Verificar el resultado
+        if "Already up to date" in process.stdout:
+            await message.edit_text("✅ El código ya está actualizado. No se requieren cambios.")
+            return
+            
+        if process.returncode != 0:
+            await message.edit_text(
+                f"❌ Error al actualizar desde GitHub:\n```\n{process.stderr}\n```", 
+                parse_mode="Markdown"
+            )
+            return
+            
+        # Si la actualización fue exitosa
+        response = (
+            f"✅ Código actualizado exitosamente\n\n"
+            f"📝 Cambios:\n```\n{process.stdout}\n```\n\n"
+            f"¿Deseas reiniciar los servicios para aplicar los cambios?"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Reiniciar todos", callback_data="update_restart_all"),
+                InlineKeyboardButton("❌ Cancelar", callback_data="cancel_update")
+            ]
+        ]
+        
+        await message.edit_text(
+            response,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error durante la actualización: {str(e)}")
+
 # Manejador de callbacks
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -412,6 +475,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(f"✅ El proceso {pid} ya ha terminado.")
         except Exception as e:
             await query.edit_message_text(f"❌ Error al forzar terminación del proceso {pid}: {str(e)}")
+
+    elif query.data == "update_restart_all":
+        await query.edit_message_text("🔄 Reiniciando todos los servicios...")
+        
+        try:
+            # Reiniciar servicio principal
+            process1 = subprocess.run(
+                ["sudo", "systemctl", "restart", SYSTEMD_SERVICE], 
+                capture_output=True,
+                text=True
+            )
+            
+            # Reiniciar servicio de monitoreo (se ejecutará después de que este código termine)
+            process2 = subprocess.run(
+                ["sudo", "systemctl", "restart", "telegram-bot-monitor"], 
+                capture_output=True,
+                text=True
+            )
+            
+            await query.edit_message_text(
+                "✅ Actualización completada y servicios reiniciados correctamente.\n"
+                "El bot de monitoreo se reiniciará en breve."
+            )
+            
+        except Exception as e:
+            await query.edit_message_text(f"❌ Error al reiniciar servicios: {str(e)}")
+    
+    elif query.data == "cancel_update":
+        await query.edit_message_text(
+            "✅ Actualización completada. Los cambios se aplicarán la próxima vez que reinicies los servicios."
+        )
 
 # Eliminar archivos de bloqueo para un PID específico
 def clean_lock_files_for_pid(pid):
@@ -580,6 +674,7 @@ async def main():
     application.add_handler(CommandHandler("clean", clean_command))
     application.add_handler(CommandHandler("kill", kill_command))
     application.add_handler(CommandHandler("help", start_command))
+    application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Recolectar estado inicial
