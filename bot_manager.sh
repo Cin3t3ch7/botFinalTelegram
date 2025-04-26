@@ -4,10 +4,10 @@
 BOT_SCRIPT="main.py"
 
 # Directorio donde se encuentra el script del bot
-BOT_DIR="/root/Newcode"
+BOT_DIR="/root/botFinalTlg"
 
 # Nombre del servicio systemd
-SERVICE_NAME="telegram-bot-newcode"
+SERVICE_NAME="botFinalTlg"
 
 # Crear archivo de servicio systemd
 create_systemd_service() {
